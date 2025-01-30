@@ -174,3 +174,5 @@ cython_debug/
 /certs/*
 */certs/
 */certs/*
+
+.DS_Store
