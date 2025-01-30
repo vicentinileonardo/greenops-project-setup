@@ -48,7 +48,7 @@ kubectl get virtualmachines.compute.azure.com --all-namespaces
 ```
 
 Create `aso-credential` secret that contains the Azure credentials (make sure to replace the <PLACEHOLDER> with the actual values).
-The secret must be named `aso-credential` and be created in the namespace you’d like to create ASO resources in:
+The secret must be named `aso-credential` and be created in the namespace you’d like to create ASO resources in (in this case, `greenops`):
 ```sh
 cat <<EOF | kubectl apply -f -
 apiVersion: v1

@@ -6,7 +6,6 @@
 - kubectl
 - helm
 - cert-manager already installed in the cluster (see [install_1.md](install_1.md))
-- CrateDB CLI ([crash](https://cratedb.com/docs/crate/crash/en/latest/index.html)) installed on your local machine (optional)
 
 ## Install CrateDB Operator and CrateDB Cluster
 
@@ -274,14 +273,15 @@ kubectl get svc mlflow-tracking -n mlflow-tracking -o jsonpath='{.status.loadBal
 
 Access the MLflow tracking server URL in your browser at `http://<MLFLOW_TRACKING_SERVER_IP>:5000`.
 
-## Install KServe (RawDeployment mode)
-
-Source: https://kserve.github.io/website/latest/admin/kubernetes_deployment/
+## Install KServe (Serverless mode)
 
 ```sh
+export deploymentMode=Serverless
 export ISTIO_VERSION=1.23.2
 export KSERVE_VERSION=v0.14.1
 export GATEWAY_API_VERSION=v1.2.1
+export KNATIVE_OPERATOR_VERSION=v1.15.7
+export KNATIVE_SERVING_VERSION=1.15.2
 
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml
 
@@ -301,90 +301,167 @@ sleep 10
 # Wait for istio ingressgateway to be ready
 kubectl wait --for=condition=Ready pod -l app=istio-ingressgateway -n istio-system --timeout=600s
 
+helm install knative-operator --namespace knative-serving --create-namespace --wait \
+  https://github.com/knative/operator/releases/download/knative-${KNATIVE_OPERATOR_VERSION}/knative-operator-${KNATIVE_OPERATOR_VERSION}.tgz
+
+kubectl apply -f - <<EOF
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+  namespace: knative-serving
+spec:
+  version: "${KNATIVE_SERVING_VERSION}"
+  config:
+    domain:
+      # Patch the external domain as the default domain svc.cluster.local is not exposed on ingress (from knative 1.8)
+      example.com: ""
+EOF
+
 # Install KServe
 helm install kserve-crd oci://ghcr.io/kserve/charts/kserve-crd --version ${KSERVE_VERSION} --namespace kserve --create-namespace --wait
-
 helm install kserve oci://ghcr.io/kserve/charts/kserve --version ${KSERVE_VERSION} --namespace kserve --create-namespace --wait \
-   --set kserve.controller.deploymentMode=RawDeployment \
-   --set kserve.modelmesh.enabled=false
-
+   --set-string kserve.controller.deploymentMode="${deploymentMode}" --set kserve.modelmesh.enabled=false
 ```
 
 
+## (DUMMY) Apply KServe InferenceService (Working example)
 
+This is a dummy example to test KServe.
 
-
-
-
-## (YAML) Install KNative Serving + Istio
-
-Knative Serving and Istio are needed by KServe.
-
-Install the required custom resources by running the command:
+Create the `model-inference` namespace:
 ```sh
-kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.16.1/serving-crds.yaml
+kubectl create ns model-inference
 ```
 
-Install the core components of Knative Serving by running the command:
+Apply the KServe InferenceService:
 ```sh
-kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.16.1/serving-core.yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: "mlflow-wine-classifier"
+  namespace: "model-inference"
+spec:
+  predictor:
+    containers:
+      - name: "mlflow-wine-classifier"
+        image: "leovice/mlflow-wine-classifier"
+        ports:
+          - containerPort: 8080
+            protocol: TCP
+        env:
+          - name: PROTOCOL
+            value: "v2"
+EOF
 ```
 
-Install Istio by running the commands:
+Checking the status of the InferenceService:
 ```sh
-kubectl apply -f https://github.com/knative/net-istio/releases/download/knative-v1.16.0/istio.yaml
+kubectl get inferenceservice mlflow-wine-classifier -n model-inference
 ```
 
+
+### Testing the InferenceService
+
+#### Spinning up a test client
+```bash
+kubectl run --rm -it --image=alpine/curl:latest test-client -- /bin/sh
+```
+
+#### Testing health endpoints
+```bash
+# Check if the server is ready
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/health/ready
+# Response
+# 200 OK
+
+# Check if the server is live
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/health/live
+# Response
+# 200 OK
+
+# GET server metadata
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2
+# Response
+# {"name":"mlserver","version":"1.3.5","extensions":[]}
+```
+
+#### Getting available models
+```bash
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/repository/index \
+     -H "Content-Type: application/json" \
+     -d '{}' 
+# Response
+# [{"name":"mlflow-model","version":"dce3966053da44658dc78889d02ac9d8","state":"READY","reason":""}]
+```
+
+#### Getting model metadata
+```bash
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/models/mlflow-model
+# Response
+# {"name":"mlflow-model","versions":[],"platform":"","inputs":[{"name":"input-0","datatype":"FP64","shape":[-1,13],"parameters":{"content_type":"np"}}],"outputs":[{"name":"output-0","datatype":"FP64","shape":[-1],"parameters":{"content_type":"np"}}],"parameters":{"content_type":"np"}}
+```
+
+#### Checking if the model is ready
+```bash
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/models/mlflow-model/ready
+# Response
+# 200 OK
+```
+
+#### Testing the infer endpoint
+```bash
+curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/models/mlflow-model/infer \
+     -H "Content-Type: application/json" \
+     -d '{
+    "inputs": [
+        {
+            "name": "input",
+            "shape": [1, 13],
+            "datatype": "FP64",
+            "data": [[14.23, 1.71, 2.43, 15.6, 127.0, 2.8, 3.06, 0.28, 2.29, 5.64, 1.04, 3.92, 1065.0]]
+        }
+    ]
+}' 
+
+# Response
+# {"model_name":"mlflow-model","model_version":"dce3966053da44658dc78889d02ac9d8","id":"************************************","parameters":{"content_type":"np"},"outputs":[{"name":"output-1","shape":[1,1],"datatype":"FP64","parameters":{"content_type":"np"},"data":[0.44111927902918846]}]}
+```
+
+
+
+
+
+
+## Apply KServe InferenceService (TorchServe - PyTorch) (actual production model)
+
+TODO: understand how to set limits and requests for the inference service
+
+Create the `model-inference` namespace:
 ```sh
-kubectl patch deployment istio-ingressgateway -n istio-system --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/template/spec/containers/0/resources",
-    "value": {
-      "requests": {
-        "cpu": "500m",
-        "memory": "512Mi"
-      },
-      "limits": {
-        "cpu": "1",
-        "memory": "1Gi"
-      }
-    }
-  }
-]'
+kubectl create ns model-inference
 ```
 
-Install the Knative Istio controller by running the command:
+Apply the KServe InferenceService:
 ```sh
-kubectl apply -f https://github.com/knative/net-istio/releases/download/knative-v1.16.0/net-istio.yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: "forecaster1"
+spec:
+  predictor:
+    model:
+      args: ["--enable_docs_url=True"]
+      modelFormat:
+        name: pytorch
+      protocolVersion: v2  
+      storageUri: s3://mlartifacts/forecaster1
+EOF
 ```
 
-Verify that the Knative Serving components are installed correctly:
+Checking the status of the InferenceService:
 ```sh
-kubectl get pods -n knative-serving
+kubectl get inferenceservice forecaster1 -n model-inference
 ```
-
-
-
-## (YAML) Install KServe
-
-Install KServe CRDs by running the command:
-```sh
-helm install kserve-crd oci://ghcr.io/kserve/charts/kserve-crd --version v0.14.1
-```
-
-Install KServe Resources by running the command:
-```sh
-helm install kserve oci://ghcr.io/kserve/charts/kserve --version v0.14.1
-```
-
-
-
-
-
-
-
-
-
-
-
