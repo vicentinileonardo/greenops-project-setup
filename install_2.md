@@ -569,7 +569,7 @@ The following issues were encountered while trying to deploy the MLFlow model us
 + https://github.com/kserve/kserve/discussions/4100#discussioncomment-11539275
 
 
-In order to solve the issues, we need to create a Conda environment with the necessary dependencies and pack it to be uploaded to S3.
+In order to solve the issues, we need to create a Conda environment with the necessary dependencies and pack it to be uploaded to the model bucket in the artifact store (SeaweedFS in this case).
 In this way, MLServer will be able to download the environment and install the dependencies correctly.
 
 ```sh
