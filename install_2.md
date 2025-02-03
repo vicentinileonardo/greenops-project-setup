@@ -183,7 +183,7 @@ kubectl wait --for=condition=ready pods -l app.kubernetes.io/component=filer -n 
 Get credentials:
 ```sh
 kubectl get secret s3-secret-deployment -n mlflow-tracking -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 --decode
-
+echo ""
 kubectl get secret s3-secret-deployment -n mlflow-tracking -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 --decode
 ```
 
@@ -244,6 +244,60 @@ exit
 Delete the pod:
 ```sh
 kubectl delete pod python-test-pod
+```
+
+#### External access to SeaweedFS
+
+For testing or operational purposes, you may want to access the SeaweedFS S3 service from outside the cluster. Be cautious with this approach, as it may expose your data to the public.
+
+Apply the following service:
+```sh
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs-s3-external
+  namespace: seaweedfs
+  labels:
+    app.kubernetes.io/name: seaweedfs
+    app.kubernetes.io/component: s3
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8333
+      targetPort: 8333
+      protocol: TCP
+      name: swfs-s3
+  selector:
+    app.kubernetes.io/component: filer
+    app.kubernetes.io/name: seaweedfs
+EOF
+```
+
+Get the external IP address:
+```sh
+kubectl get svc seaweedfs-s3-external -n seaweedfs -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+```
+
+You need to set environment variables in your local environment to access the SeaweedFS S3 service from outside the cluster:
+```sh
+export AWS_ACCESS_KEY_ID="<AWS_ACCESS_KEY_ID>"
+export AWS_SECRET_ACCESS_KEY="<AWS_SECRET_ACCESS_KEY>"
+```
+
+Access the SeaweedFS S3 service from outside the cluster:
+```sh
+aws --endpoint-url http://<EXTERNAL_IP>:8333 s3 ls s3://mlartifacts
+```
+
+Upload a folder to the SeaweedFS S3 service from outside the cluster:
+```sh
+aws --endpoint-url http://<EXTERNAL_IP>:8333 s3 cp pytorch-model-test s3://mlartifacts/pytorch-model-test/ --recursive
+```
+
+Remember to delete the `seaweedfs-s3-external` service after testing:
+```sh
+kubectl delete svc seaweedfs-s3-external -n seaweedfs
 ```
 
 ## Install MLflow tracking server
@@ -325,9 +379,9 @@ helm install kserve oci://ghcr.io/kserve/charts/kserve --version ${KSERVE_VERSIO
 ```
 
 
-## (DUMMY) Apply KServe InferenceService (Working example)
+## (DUMMY EXAMPLE) Apply KServe InferenceService
 
-This is a dummy example to test KServe.
+This is a dummy example to test KServe InferenceService with a simple model.
 
 Create the `model-inference` namespace:
 ```sh
@@ -361,15 +415,16 @@ Checking the status of the InferenceService:
 kubectl get inferenceservice mlflow-wine-classifier -n model-inference
 ```
 
-
-### Testing the InferenceService
+### Testing the InferenceService (dummy example)
 
 #### Spinning up a test client
+
 ```bash
 kubectl run --rm -it --image=alpine/curl:latest test-client -- /bin/sh
 ```
 
 #### Testing health endpoints
+
 ```bash
 # Check if the server is ready
 curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/health/ready
@@ -397,6 +452,7 @@ curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/repos
 ```
 
 #### Getting model metadata
+
 ```bash
 curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/models/mlflow-model
 # Response
@@ -404,6 +460,7 @@ curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/model
 ```
 
 #### Checking if the model is ready
+
 ```bash
 curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/models/mlflow-model/ready
 # Response
@@ -411,6 +468,7 @@ curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/model
 ```
 
 #### Testing the infer endpoint
+
 ```bash
 curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/models/mlflow-model/infer \
      -H "Content-Type: application/json" \
@@ -429,18 +487,54 @@ curl -v http://mlflow-wine-classifier.model-inference.svc.cluster.local/v2/model
 # {"model_name":"mlflow-model","model_version":"dce3966053da44658dc78889d02ac9d8","id":"************************************","parameters":{"content_type":"np"},"outputs":[{"name":"output-1","shape":[1,1],"datatype":"FP64","parameters":{"content_type":"np"},"data":[0.44111927902918846]}]}
 ```
 
+## Apply KServe InferenceService (mlflow PyTorch) (actual production model)
 
-
-
-
-
-## Apply KServe InferenceService (TorchServe - PyTorch) (actual production model)
-
-TODO: understand how to set limits and requests for the inference service
+MLFlow model format (PyTorch) structure:
+```sh
+model/
+├── MLmodel
+├── conda.yaml
+├── python_env.yaml
+├── requirements.txt
+└── data/
+    ├── model.pth
+    └── pickle_module_info.txt  
+```
 
 Create the `model-inference` namespace:
 ```sh
 kubectl create ns model-inference
+```
+
+Create the secret and service account for the InferenceService:
+```sh
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3creds
+  namespace: model-inference
+  annotations:
+     serving.kserve.io/s3-endpoint: "seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+     serving.kserve.io/s3-usehttps: "0"
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: $(kubectl get secret s3-secret-deployment -n mlflow-tracking -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 --decode)
+  AWS_SECRET_ACCESS_KEY: $(kubectl get secret s3-secret-deployment -n mlflow-tracking -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 --decode)
+EOF
+
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-s3creds
+  namespace: model-inference
+  annotations:
+    serving.kserve.io/s3-endpoint: "seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+    serving.kserve.io/s3-usehttps: "0" 
+secrets:
+- name: s3creds
+EOF
 ```
 
 Apply the KServe InferenceService:
@@ -449,19 +543,126 @@ cat <<EOF | kubectl apply -f -
 apiVersion: "serving.kserve.io/v1beta1"
 kind: "InferenceService"
 metadata:
-  name: "forecaster1"
+  name: "forecaster-1"
+  namespace: "model-inference"
 spec:
   predictor:
+    serviceAccountName: sa-s3creds
     model:
-      args: ["--enable_docs_url=True"]
       modelFormat:
-        name: pytorch
+        name: mlflow
       protocolVersion: v2  
-      storageUri: s3://mlartifacts/forecaster1
+      storageUri: s3://mlartifacts/forecaster-1
 EOF
 ```
 
 Checking the status of the InferenceService:
 ```sh
-kubectl get inferenceservice forecaster1 -n model-inference
+kubectl get inferenceservice forecaster-1 -n model-inference
 ```
+
+### MLFlow - MLServer Issues
+
+The following issues were encountered while trying to deploy the MLFlow model using KServe InferenceService (which under the hood uses MLServer):
+https://github.com/kserve/kserve/issues/3733
+https://github.com/kserve/kserve/issues/4122
+https://github.com/kserve/kserve/discussions/4100#discussioncomment-11539275
+
+
+In order to solve the issues, we need to create a Conda environment with the necessary dependencies and pack it to be uploaded to S3.
+In this way, MLServer will be able to download the environment and install the dependencies correctly.
+
+```sh
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: conda-env-pack
+  namespace: model-inference
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: conda-env-builder
+        image: continuumio/miniconda3
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: s3creds
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: s3creds
+              key: AWS_SECRET_ACCESS_KEY
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |
+          echo "AWS Access Key ID: $AWS_ACCESS_KEY_ID"
+          echo "AWS Secret Access Key: $AWS_SECRET_ACCESS_KEY"
+          echo "Creating Conda environment..."
+          conda create -n mlflow-env python=3.10 -y
+
+          echo "Activating Conda environment..."
+          source /opt/conda/bin/activate mlflow-env
+
+          # echo "Upgrading setuptools to a compatible version..."
+          # pip install --upgrade setuptools==68.0.0
+
+          echo "Installing dependencies..."
+          pip install numpy==1.25.2 --no-build-isolation \
+                      accelerate==0.28.0 \
+                      cffi==1.17.1 \
+                      cloudpickle==3.1.1 \
+                      colorama==0.4.4 \
+                      defusedxml==0.7.1 \
+                      etils==1.7.0 \
+                      googleapis-common-protos==1.63.1 \
+                      importlib-resources==6.4.5 \
+                      jaraco-collections==5.1.0 \
+                      jax-cuda12-plugin==0.4.34 \
+                      jax==0.4.26 \
+                      jaxlib==0.4.26 \
+                      jinja2==3.1.3 \
+                      matplotlib==3.9.3 \
+                      pandas==2.2.3 \
+                      pynvml==11.5.3 \
+                      pytorch-lightning==2.4.0 \
+                      rich==13.9.2 \
+                      scikit-learn==1.2.2 \
+                      scipy==1.14.1 \
+                      sentencepiece==0.1.99 \
+                      tensorflow==2.9.3 \
+                      torch==2.4.0 \
+                      torchvision==0.19.0 \
+                      mlserver==1.6.1 \
+                      mlserver-mlflow==1.6.1 \
+                      mlflow==2.19.0 \
+                      pydantic \
+                      conda-pack
+
+          git clone "https://github.com/ibm-granite/granite-tsfm.git" 
+          cd granite-tsfm 
+          pip install "tsfm_public[notebooks] @ git+https://github.com/ibm-granite/granite-tsfm.git@v0.2.17"
+
+          echo "Packing Conda environment..."
+          conda pack -n mlflow-env -o environment.tar.gz
+          echo "Uploading to S3..."
+          pip install awscli
+          aws --endpoint-url http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333 s3 cp environment.tar.gz s3://mlartifacts/forecaster-1/
+EOF
+```
+
+Logs of the job:
+```sh
+kubectl logs -f conda-env-pack -n model-inference -f
+```
+
+After the job is completed, we can deploy the InferenceService as shown above.
+
+## TODO
+
+TODO: understand how to set limits and requests for the inference service

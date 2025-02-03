@@ -176,3 +176,11 @@ cython_debug/
 */certs/*
 
 .DS_Store
+
+local_model_testing/
+local_model_testing/*
+model_testing/
+model_testing/*
+colab/
+colab/*
+
