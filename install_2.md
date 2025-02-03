@@ -564,9 +564,9 @@ kubectl get inferenceservice forecaster-1 -n model-inference
 ### MLFlow - MLServer Issues
 
 The following issues were encountered while trying to deploy the MLFlow model using KServe InferenceService (which under the hood uses MLServer):
-https://github.com/kserve/kserve/issues/3733
-https://github.com/kserve/kserve/issues/4122
-https://github.com/kserve/kserve/discussions/4100#discussioncomment-11539275
++ https://github.com/kserve/kserve/issues/3733
++ https://github.com/kserve/kserve/issues/4122
++ https://github.com/kserve/kserve/discussions/4100#discussioncomment-11539275
 
 
 In order to solve the issues, we need to create a Conda environment with the necessary dependencies and pack it to be uploaded to S3.
