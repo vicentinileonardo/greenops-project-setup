@@ -658,11 +658,61 @@ EOF
 
 Logs of the job:
 ```sh
-kubectl logs -f conda-env-pack -n model-inference -f
+kubectl logs <conda-env-pack-pod-name> -n model-inference -f
 ```
 
 After the job is completed, we can deploy the InferenceService as shown above.
 
 ## TODO
 
-TODO: understand how to set limits and requests for the inference service
+- understand how to set limits and requests for the inference service
+
+- investigate naming problem with the model bucket. 
+
+This does not work. ("Model cannot be loaded")
+```yaml
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: "model-3"
+  namespace: "model-inference"
+spec:
+  predictor:
+    serviceAccountName: sa-s3creds
+    model:
+      modelFormat:
+        name: mlflow
+      protocolVersion: v2  
+      storageUri: s3://mlartifacts/1738860331928/6947cdaf5dee4854a80fff08ebdb76cc/artifacts/model
+```
+
+If I copy the content into `s3://mlartifacts/model-3`
+with
+```sh
+aws --endpoint-url http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333 s3 cp \
+s3://mlartifacts/1738860331928/6947cdaf5dee4854a80fff08ebdb76cc/artifacts/model/ \
+s3://mlartifacts/model-3 \
+--recursive 
+```
+
+And then I deploy:
+
+```yaml
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: "model-3"
+  namespace: "model-inference"
+spec:
+  predictor:
+    serviceAccountName: sa-s3creds
+    model:
+      modelFormat:
+        name: mlflow
+      protocolVersion: v2  
+      storageUri: s3://mlartifacts/model-3
+```
+
+It works
+
+To be tested: maybe change the last folder name of the "long path" to `model-3` and see if it works.

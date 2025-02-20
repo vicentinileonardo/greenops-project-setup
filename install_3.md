@@ -88,7 +88,8 @@ Install the chart:
 ```sh
 helm repo add lv https://leonardovicentini.com/helm-charts/charts
 helm repo update
-helm install opa lv/opa -n opa
+helm install opa lv/opa -n opa \
+--set opa.configMaps.envConfig.data.SCHEDULER_URL="http://greenops-scheduler.greenops-scheduler-system.svc.cluster.local/scheduling"
 ```
 
 ## Set K8s mutating webhook configuration
@@ -130,11 +131,3 @@ You can follow the OPA logs to see the webhook requests being issued by the Kube
 # ctrl-c to exit
 kubectl logs -l app=opa -n opa -c opa -f
 ```
-
-
-
-
-
-
-
-
